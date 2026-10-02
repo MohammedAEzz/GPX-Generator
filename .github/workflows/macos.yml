@@ -1,13 +1,18 @@
 name: Build macOS DMG
+
 on:
   workflow_dispatch:
   push:
-    tags: ['v*']
+    tags: ["v*"]
+
 permissions:
   contents: write
+
 jobs:
   build:
+    name: Build ${{ matrix.arch }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: macos-15
@@ -16,35 +21,61 @@ jobs:
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: '3.12'
-      - run: python -m pip install pyinstaller==6.16.0
-      - name: Build application
+          python-version: "3.12.14"
+
+      - name: Confirm runner architecture
         run: |
-          python -c 'import tkinter; print(tkinter.TkVersion)'
-          python -m PyInstaller --noconfirm --clean --windowed --name NaveeraGPX --osx-bundle-identifier tech.naveera.gpx app.py
-          mkdir dmg-stage
-          cp -R dist/NaveeraGPX.app dmg-stage/
-          ln -s /Applications dmg-stage/Applications
-          hdiutil create -volname NaveeraGPX -srcfolder dmg-stage -ov -format UDZO NaveeraGPX-${{ matrix.arch }}.dmg
-      - uses: actions/upload-artifact@v4
+          actual="$(uname -m)"
+          echo "uname -m = ${actual}"
+          test "$actual" = "${{ matrix.arch }}"
+
+      - name: Create the pinned venv and assert Tcl/Tk
+        run: |
+          bash scripts/bootstrap_venv.sh
+          .venv/bin/python scripts/check_tk.py
+
+      - name: Test
+        run: .venv/bin/python -m pytest -q
+
+      - name: Package app and DMG
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash scripts/build_macos.sh
+
+      - name: Smoke-test the packaged app
+        run: |
+          dist/NaveeraGPX.app/Contents/MacOS/NaveeraGPX --self-test
+          dist/NaveeraGPX.app/Contents/MacOS/NaveeraGPX --gui-self-test
+
+      - uses: actions/upload-artifact@v7
         with:
           name: NaveeraGPX-${{ matrix.arch }}
-          path: '*.dmg'
+          path: dist/NaveeraGPX-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+
   publish:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: NaveeraGPX-*
           merge-multiple: true
-      - name: Publish release
+
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes 'Naveera GPX Generator for macOS. Download arm64 for Apple Silicon or x86_64 for Intel.'
-          gh release upload "$GITHUB_REF_NAME" *.dmg --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --notes "Naveera GPX Generator for macOS. Download the arm64 DMG for Apple Silicon or the x86_64 DMG for Intel. Builds are unsigned unless the repository signing secrets were configured for this tag."
+          gh release upload "$GITHUB_REF_NAME" ./*.dmg --repo "$GITHUB_REPOSITORY" --clobber
