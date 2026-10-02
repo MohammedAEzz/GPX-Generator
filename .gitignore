@@ -1,0 +1,11 @@
+.venv/
+build/
+dist/
+dmg-stage/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.dmg
+.DS_Store
+*.spec
+*.spec.bak
