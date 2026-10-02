@@ -1,0 +1,50 @@
+name: Build macOS DMG
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pyinstaller==6.16.0
+      - name: Build application
+        run: |
+          python -c 'import tkinter; print(tkinter.TkVersion)'
+          python -m PyInstaller --noconfirm --clean --windowed --name NaveeraGPX --osx-bundle-identifier tech.naveera.gpx app.py
+          mkdir dmg-stage
+          cp -R dist/NaveeraGPX.app dmg-stage/
+          ln -s /Applications dmg-stage/Applications
+          hdiutil create -volname NaveeraGPX -srcfolder dmg-stage -ov -format UDZO NaveeraGPX-${{ matrix.arch }}.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NaveeraGPX-${{ matrix.arch }}
+          path: '*.dmg'
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: NaveeraGPX-*
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes 'Naveera GPX Generator for macOS. Download arm64 for Apple Silicon or x86_64 for Intel.'
+          gh release upload "$GITHUB_REF_NAME" *.dmg --repo "$GITHUB_REPOSITORY" --clobber
